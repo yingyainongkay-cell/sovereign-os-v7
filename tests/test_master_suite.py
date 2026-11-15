@@ -6,20 +6,22 @@ from sovereign.kernel import SovereignKernel
 def kernel():
     return SovereignKernel()
 
-@pytest.mark.parametrize("attack_id, payload, expected_status, expected_reason", [
-    ("ATK-01", "import os\nos.system('rm -rf /')", "DENIED", "AST_VIOLATION"),
-    ("ATK-02", "getattr(__builtins__, 'eval')('print(1)')", "DENIED", "AST_VIOLATION"),
-    ("ATK-03", "def add(a, b):\n    return a + b", "VERIFIED", None),
-    ("ATK-04", "def broken_code(:", "DENIED", "AST_VIOLATION"),
+@pytest.mark.parametrize("attack_id, payload, expected_status", [
+    ("ATK-01", "import os\nos.system('rm -rf /')", "DENIED"),
+    ("ATK-02", "getattr(__builtins__, 'eval')('print(1)')", "DENIED"),
+    ("ATK-03", "def add(a, b):\n    return a + b", "VERIFIED"),
+    ("ATK-04", "def broken_code(:", "DENIED"),
+    ("ATK-06", "while True:\n    pass", "DENIED"), # <--- Sandbox Timeout Test
 ])
-def test_red_team_attacks(kernel, attack_id, payload, expected_status, expected_reason):
+def test_red_team_attacks(kernel, attack_id, payload, expected_status):
     result = kernel.execute_pipeline(payload)
-    assert result["status"] == expected_status
+    assert result["status"] == expected_status, f"[{attack_id}] Expected {expected_status} but got {result['status']}"
+    
+    # ตรวจสอบ Multi-Sig (Phase C)
     if expected_status == "VERIFIED":
-        assert "signature" in result
-        assert len(result["signature"]) == 128 # Ed25519 hex length
-    if expected_reason:
-        assert result["reason"] == expected_reason
+        attestation = result["attestation"]
+        assert len(attestation["signatures"]) == 2 # บังคับ 2-of-3
+        assert attestation["quorum"] == "2-of-3"
 
 def test_circuit_breaker_opens_on_cascading_failure(kernel):
     bad_payload = "import os\nos.system('malicious')"

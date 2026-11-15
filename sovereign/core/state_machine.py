@@ -2,16 +2,14 @@
 import sqlite3
 import json
 import time
+import subprocess
 
 class CircuitBreaker:
-    """
-    Calculus Bound: ถ้าอัตราความผิดพลาด (dE/dt) สูงเกิน Threshold ให้ Trip (ตัดการทำงาน)
-    """
     def __init__(self, failure_threshold: int = 3, recovery_time_sec: int = 10):
         self.failure_threshold = failure_threshold
         self.recovery_time = recovery_time_sec
         self.failure_count = 0
-        self.state = "CLOSED" # CLOSED = ทำงานปกติ, OPEN = ตัดการทำงาน
+        self.state = "CLOSED"
         self.last_failure_time = 0
 
     def record_failure(self):
@@ -19,7 +17,6 @@ class CircuitBreaker:
         self.last_failure_time = time.time()
         if self.failure_count >= self.failure_threshold:
             self.state = "OPEN"
-            print("🚨 [Circuit Breaker] TRIPPED! Too many failures. System is now OPEN.")
 
     def record_success(self):
         self.failure_count = 0
@@ -28,7 +25,6 @@ class CircuitBreaker:
     def allow_request(self) -> bool:
         if self.state == "OPEN":
             if time.time() - self.last_failure_time > self.recovery_time:
-                print("⚠️ [Circuit Breaker] Half-Open: Testing if system recovered...")
                 self.state = "CLOSED"
                 self.failure_count = 0
                 return True
@@ -36,9 +32,6 @@ class CircuitBreaker:
         return True
 
 class SQLiteCheckpointer:
-    """
-    State Machine Theory: บันทึก State ป้องกันการเริ่มใหม่ตั้งแต่ต้น (Resume-Safe)
-    """
     def __init__(self, db_path="master_stack_state.db"):
         self.db_path = db_path
         self._init_db()
@@ -60,11 +53,20 @@ class SQLiteCheckpointer:
                 "INSERT INTO checkpoints (state_hash, state_data, timestamp) VALUES (?, ?, ?)",
                 (state_hash, json.dumps(state_data), time.time())
             )
-        print(f"💾 [Checkpointer] State saved: {state_hash[:8]}")
 
-    def get_latest_checkpoint(self) -> dict:
-        with sqlite3.connect(self.db_path) as conn:
-            row = conn.execute("SELECT state_data FROM checkpoints ORDER BY id DESC LIMIT 1").fetchone()
-            if row:
-                return json.loads(row[0])
-        return {}
+class RuntimeSandbox:
+    """Calculus Bound: ป้องกัน Infinite Loop ด้วย Subprocess + Timeout"""
+    @staticmethod
+    def execute_safely(code: str, timeout_sec: float = 1.0) -> dict:
+        try:
+            # รันโค้ดใน Python process ใหม่
+            result = subprocess.run(
+                ["python3", "-c", code],
+                capture_output=True, text=True, timeout=timeout_sec
+            )
+            if result.returncode == 0:
+                return {"status": "SUCCESS", "output": result.stdout.strip()}
+            else:
+                return {"status": "FAILED", "error": result.stderr.strip()}
+        except subprocess.TimeoutExpired:
+            return {"status": "BLOCKED", "reason": "Execution Timeout Exceeded (Infinite Loop Protection)"}
